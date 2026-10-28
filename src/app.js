@@ -4,7 +4,7 @@ const path = require('node:path');
 const express = require('express');
 const { GitHubError } = require('./github');
 const { hashPassword, verifyPassword } = require('./crypto');
-const { TokenService, NoTokenError, InvalidTokenError } = require('./tokens');
+const { TokenService, NoTokenError, InvalidTokenError, UnreadableTokenError } = require('./tokens');
 const { SessionStore } = require('./sessions');
 
 const OWNER_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
@@ -497,7 +497,7 @@ function createApp({
 
   // eslint-disable-next-line no-unused-vars
   api.use((err, req, res, next) => {
-    if (err instanceof HttpError || err instanceof NoTokenError || err instanceof InvalidTokenError) {
+    if (err instanceof HttpError || err instanceof NoTokenError || err instanceof InvalidTokenError || err instanceof UnreadableTokenError) {
       res.status(err.status).json({ error: err.message });
     } else if (err instanceof GitHubError && err.status === 401) {
       // The user's own token was rejected; 401 is reserved for "not signed in to this app".

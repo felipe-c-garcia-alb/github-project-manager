@@ -28,8 +28,11 @@ const tokens = new TokenService({
   createGitHub: (token) => new GitHubClient({ token, baseUrl: config.githubApiUrl }),
 });
 
-const rotated = tokens.rotateAll();
+const { rotated, unreadable } = tokens.rotateAll();
 if (rotated) console.log(`Re-encrypted ${rotated} GitHub token(s) with the current encryption key.`);
+if (unreadable) {
+  console.warn(`${unreadable} stored GitHub token(s) cannot be decrypted with the configured keys; those users must save their token again.`);
+}
 
 const flowRunner = new FlowRunner({ githubForUser: (userId) => tokens.githubFor(userId), store });
 const app = createApp({

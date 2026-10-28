@@ -9,6 +9,13 @@ class NoTokenError extends Error {
   }
 }
 
+class UnreadableTokenError extends Error {
+  constructor() {
+    super('Your stored GitHub token can no longer be decrypted (the server encryption key changed). Save it again on the Settings page.');
+    this.status = 412;
+  }
+}
+
 class InvalidTokenError extends Error {
   constructor(message) {
     super(message);
@@ -62,7 +69,11 @@ class TokenService {
   get(userId) {
     const user = this.store.getUser(userId);
     if (!user || !user.githubToken) return null;
-    return this.secretBox.decrypt(user.githubToken.ciphertext, TokenService.aad(userId));
+    try {
+      return this.secretBox.decrypt(user.githubToken.ciphertext, TokenService.aad(userId));
+    } catch {
+      throw new UnreadableTokenError();
+    }
   }
 
   /** Returns a GitHub client authenticated as the user. Throws NoTokenError when none is configured. */
@@ -72,12 +83,22 @@ class TokenService {
     return this.createGitHub(token);
   }
 
-  /** Re-encrypts tokens that were encrypted with a previous key. Returns how many were rotated. */
+  /**
+   * Re-encrypts tokens that were encrypted with a previous key.
+   * Tokens that cannot be decrypted with any configured key are left untouched (their users must save them again).
+   */
   rotateAll() {
     let rotated = 0;
+    let unreadable = 0;
     for (const user of this.store.listUsers()) {
       if (user.githubToken && this.secretBox.needsRotation(user.githubToken.ciphertext)) {
-        const plaintext = this.secretBox.decrypt(user.githubToken.ciphertext, TokenService.aad(user.id));
+        let plaintext;
+        try {
+          plaintext = this.secretBox.decrypt(user.githubToken.ciphertext, TokenService.aad(user.id));
+        } catch {
+          unreadable += 1;
+          continue;
+        }
         this.store.setUserToken(user.id, {
           ...user.githubToken,
           ciphertext: this.secretBox.encrypt(plaintext, TokenService.aad(user.id)),
@@ -85,7 +106,7 @@ class TokenService {
         rotated += 1;
       }
     }
-    return rotated;
+    return { rotated, unreadable };
   }
 
   /** Public, non-secret information about a user's token. */
@@ -96,4 +117,4 @@ class TokenService {
   }
 }
 
-module.exports = { TokenService, NoTokenError, InvalidTokenError };
+module.exports = { TokenService, NoTokenError, InvalidTokenError, UnreadableTokenError };

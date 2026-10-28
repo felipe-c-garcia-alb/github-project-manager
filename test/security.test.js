@@ -54,7 +54,7 @@ test('TokenService.rotateAll re-encrypts tokens with the current key', async () 
 
   const newKey = key();
   const rotated = new TokenService({ store: new Store(file), secretBox: new SecretBox({ currentKey: newKey, previousKeys: [oldKey] }), createGitHub });
-  assert.equal(rotated.rotateAll(), 1);
+  assert.deepEqual(rotated.rotateAll(), { rotated: 1, unreadable: 0 });
   // After rotation, the new key alone is enough.
   const after = new TokenService({ store: new Store(file), secretBox: new SecretBox({ currentKey: newKey }), createGitHub });
   assert.equal(after.get(user.id), token);
@@ -91,4 +91,18 @@ test('loadConfig reads the key from a Docker secret file', () => {
   const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'gpm-')), 'key');
   fs.writeFileSync(file, `${k.toString('base64')}\n`);
   assert.deepEqual(loadConfig({ TOKEN_ENCRYPTION_KEY_FILE: file }).currentKey, k);
+});
+
+test('a lost encryption key does not crash startup; the user is asked to save the token again', async () => {
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'gpm-')), 'db.json');
+  const createGitHub = () => ({ getAuthenticatedUser: async () => ({ login: 'octo' }) });
+  const store = new Store(file);
+  const user = store.addUser({ username: 'alice', passwordHash: hashPassword('correct horse battery') });
+  await new TokenService({ store, secretBox: new SecretBox({ currentKey: key() }), createGitHub }).set(user.id, 'ghp_' + 'b'.repeat(36));
+
+  const tokens = new TokenService({ store: new Store(file), secretBox: new SecretBox({ currentKey: key() }), createGitHub });
+  assert.deepEqual(tokens.rotateAll(), { rotated: 0, unreadable: 1 });
+  assert.throws(() => tokens.githubFor(user.id), (err) => err.status === 412 && /save it again/i.test(err.message));
+  await tokens.set(user.id, 'ghp_' + 'c'.repeat(36));
+  assert.equal(tokens.get(user.id), 'ghp_' + 'c'.repeat(36));
 });
