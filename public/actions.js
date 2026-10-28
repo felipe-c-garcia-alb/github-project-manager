@@ -202,7 +202,7 @@ async function loadExecutions() {
           <ol class="steps">${x.steps.map((s) => `<li>
             ${statusBadge(s.status, s.conclusion)}
             <a href="${repoPageUrl(s.owner, s.repo)}">${escapeHtml(s.owner)}/${escapeHtml(s.repo)}</a>
-            · workflow ${escapeHtml(s.workflow)} @ ${escapeHtml(s.ref)}
+            · ${escapeHtml(s.workflowName || s.workflow)} @ ${escapeHtml(s.ref)}
             ${s.runUrl ? `· <a href="${escapeHtml(safeUrl(s.runUrl))}" target="_blank" rel="noopener">run ↗</a>` : ''}
             ${s.error ? `<span class="muted">— ${escapeHtml(s.error)}</span>` : ''}
           </li>`).join('')}</ol>

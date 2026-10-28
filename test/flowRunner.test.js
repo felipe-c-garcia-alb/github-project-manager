@@ -47,7 +47,7 @@ const flow = {
   name: 'build then deploy',
   steps: [
     { owner: 'acme', repo: 'api', workflow: 'build.yml', ref: 'main', inputs: {} },
-    { owner: 'acme', repo: 'web', workflow: 'deploy.yml', ref: 'main', inputs: { env: 'prod' } },
+    { owner: 'acme', repo: 'web', workflow: 'deploy.yml', workflowName: 'Deploy', ref: 'main', inputs: { env: 'prod' } },
   ],
 };
 
@@ -62,6 +62,7 @@ test('runs the next step only after the previous one succeeds', async () => {
   assert.deepEqual(github.dispatched[1].inputs, { env: 'prod' });
   assert.ok(execution.steps.every((s) => s.conclusion === 'success' && s.runId));
   assert.ok(execution.finishedAt);
+  assert.deepEqual(execution.steps.map((s) => s.workflowName), ['build.yml', 'Deploy']);
   assert.equal(runner.get(execution.id), execution);
 });
 

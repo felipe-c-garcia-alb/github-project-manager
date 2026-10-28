@@ -81,6 +81,10 @@ function createApp({ github, store, flowRunner, hasToken = true, rateLimitOption
   const api = express.Router();
   api.use(rateLimit(rateLimitOptions));
   api.use(express.json({ limit: '100kb' }));
+  api.use((req, res, next) => {
+    res.set('Cache-Control', 'no-store');
+    next();
+  });
 
   const wrap = (fn) => async (req, res, next) => {
     try {

@@ -157,6 +157,8 @@ async function refreshRun(details, forceLogs) {
     ]);
     running = run.status !== 'completed';
     details.querySelector('summary').innerHTML = runSummaryHtml(run);
+    if (!running && details.dataset.wasRunning === 'true') loadRuns();
+    details.dataset.wasRunning = String(running);
 
     const previous = select.value;
     select.innerHTML = jobs.length

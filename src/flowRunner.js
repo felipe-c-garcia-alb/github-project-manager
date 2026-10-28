@@ -51,6 +51,7 @@ class FlowRunner {
         owner: step.owner,
         repo: step.repo,
         workflow: step.workflow,
+        workflowName: step.workflowName || step.workflow,
         ref: step.ref,
         inputs: step.inputs || {},
         status: 'pending',

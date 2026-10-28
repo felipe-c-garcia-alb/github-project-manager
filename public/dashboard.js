@@ -27,7 +27,7 @@ function renderCard(r) {
       <a class="muted" href="${escapeHtml(safeUrl(r.htmlUrl))}" target="_blank" rel="noopener">GitHub ↗</a></h3>
     ${body}
     <div class="card-actions">
-      <a href="${repoPageUrl(r.owner, r.repo)}"><button type="button">Manage</button></a>
+      <a class="button" href="${repoPageUrl(r.owner, r.repo)}">Manage</a>
       <button type="button" class="danger" data-remove="${escapeHtml(r.owner)}/${escapeHtml(r.repo)}">Remove</button>
     </div>
   </div>`;
