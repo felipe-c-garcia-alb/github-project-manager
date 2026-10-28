@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Triggers &amp; Flows · GitHub Project Manager</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <nav id="nav"></nav>
+  <main>
+    <h1>Triggers &amp; Flows</h1>
+    <div id="message" class="message" hidden></div>
+
+    <div class="columns">
+      <section class="block">
+        <h2>Trigger a workflow</h2>
+        <p class="muted">Dispatches a workflow that has a <code>workflow_dispatch</code> trigger.</p>
+        <form id="trigger-form">
+          <div class="step-fields"></div>
+          <button type="submit" class="primary">Run workflow</button>
+        </form>
+      </section>
+
+      <section class="block">
+        <h2>Create a flow</h2>
+        <p class="muted">Each step is triggered only after the previous one finishes with <strong>success</strong>.
+          E.g. run <em>build</em> on repo A → when it succeeds run <em>deploy</em> on repo B.</p>
+        <form id="flow-form">
+          <div class="field">
+            <label for="flow-name">Flow name</label>
+            <input id="flow-name" required maxlength="100" placeholder="Build then deploy">
+          </div>
+          <div id="flow-steps"></div>
+          <div class="card-actions">
+            <button type="button" id="add-step">+ Add step</button>
+            <button type="submit" class="primary">Save flow</button>
+          </div>
+        </form>
+      </section>
+    </div>
+
+    <section class="block">
+      <div class="block-header"><h2>Flows</h2></div>
+      <ul id="flows" class="list"></ul>
+    </section>
+
+    <section class="block">
+      <div class="block-header">
+        <h2>Flow executions <span id="exec-live" class="live" hidden>live</span></h2>
+        <button type="button" id="exec-refresh">Refresh</button>
+      </div>
+      <div id="executions"></div>
+    </section>
+  </main>
+
+  <template id="step-template">
+    <div class="row">
+      <div>
+        <label>Repository</label>
+        <select class="step-repo" required></select>
+      </div>
+      <div>
+        <label>Workflow</label>
+        <select class="step-workflow" required></select>
+      </div>
+      <div>
+        <label>Ref (branch/tag)</label>
+        <input class="step-ref" placeholder="default branch">
+      </div>
+    </div>
+    <div class="field">
+      <label>Inputs (JSON object, optional)</label>
+      <textarea class="step-inputs" rows="2" placeholder='{"environment": "staging"}'></textarea>
+    </div>
+  </template>
+
+  <script src="common.js"></script>
+  <script src="actions.js"></script>
+</body>
+</html>

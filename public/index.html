@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dashboard · GitHub Project Manager</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <nav id="nav"></nav>
+  <main>
+    <h1>Dashboard</h1>
+    <section class="block">
+      <h2>Register a repository</h2>
+      <div id="message" class="message" hidden></div>
+      <form id="add-repo" class="inline">
+        <input id="repo-name" name="fullName" placeholder="owner/repo or https://github.com/owner/repo" size="45" required>
+        <button type="submit" class="primary">Add repository</button>
+        <button type="button" id="refresh">Refresh</button>
+      </form>
+    </section>
+    <div id="repos" class="grid"></div>
+    <p id="empty" class="muted" hidden>No repositories registered yet.</p>
+  </main>
+  <script src="common.js"></script>
+  <script src="dashboard.js"></script>
+</body>
+</html>

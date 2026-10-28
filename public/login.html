@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in · GitHub Project Manager</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <nav><span class="brand">GitHub Project Manager</span></nav>
+  <main>
+    <section class="block auth-box">
+      <h1 id="title">Sign in</h1>
+      <p id="first-user" class="muted" hidden>No account exists yet. The first account you create here will be able to use the app.</p>
+      <div id="message" class="message" hidden></div>
+      <form id="auth-form">
+        <label>Username
+          <input id="username" name="username" autocomplete="username" required minlength="3" maxlength="40">
+        </label>
+        <label>Password
+          <input id="password" name="password" type="password" autocomplete="current-password" required>
+        </label>
+        <button type="submit" class="primary" id="submit">Sign in</button>
+      </form>
+      <p><button type="button" id="toggle" class="link-button" hidden>Create an account</button></p>
+    </section>
+  </main>
+  <script src="common.js"></script>
+  <script src="login.js"></script>
+</body>
+</html>

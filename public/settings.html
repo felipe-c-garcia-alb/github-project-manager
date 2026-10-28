@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Settings · GitHub Project Manager</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <nav id="nav"></nav>
+  <main>
+    <h1>Settings</h1>
+    <section class="block">
+      <h2>GitHub token</h2>
+      <p class="muted">
+        Your personal access token is used for every GitHub request you make and for the flows you start.
+        It is encrypted before it is stored and is never sent back to the browser.
+        It needs access to the registered repositories (contents, pull requests and actions: read and write).
+      </p>
+      <div id="message" class="message" hidden></div>
+      <p id="token-status" class="token-status">Loading…</p>
+      <form id="token-form" class="stacked">
+        <label><span id="token-label">Token</span>
+          <input id="token" name="token" type="password" autocomplete="off" spellcheck="false" placeholder="ghp_… or github_pat_…" required>
+        </label>
+        <div class="inline">
+          <button type="submit" class="primary" id="save">Save token</button>
+          <button type="button" id="remove" class="danger" hidden>Remove token</button>
+        </div>
+      </form>
+    </section>
+  </main>
+  <script src="common.js"></script>
+  <script src="settings.js"></script>
+</body>
+</html>
