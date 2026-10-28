@@ -3,11 +3,16 @@
 const path = require('node:path');
 const express = require('express');
 const { GitHubError } = require('./github');
+const { hashPassword, verifyPassword } = require('./crypto');
+const { TokenService, NoTokenError, InvalidTokenError } = require('./tokens');
+const { SessionStore } = require('./sessions');
 
 const OWNER_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
 const REPO_RE = /^[A-Za-z0-9._-]{1,100}$/;
 const WORKFLOW_RE = /^[A-Za-z0-9._-]{1,255}$/;
 const NUMERIC_RE = /^\d{1,20}$/;
+const USERNAME_RE = /^[A-Za-z0-9_.-]{3,40}$/;
+const SESSION_COOKIE = 'gpm_session';
 
 class HttpError extends Error {
   constructor(status, message) {
@@ -98,14 +103,61 @@ function rateLimit({ windowMs = 60 * 1000, max = 300 } = {}) {
   };
 }
 
-function createApp({ github, store, flowRunner, hasToken = true, rateLimitOptions, allowedHosts } = {}) {
+function isLoopback(req) {
+  const addr = req.socket.remoteAddress || '';
+  return addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1';
+}
+
+function parseCookies(header) {
+  const out = {};
+  for (const part of String(header || '').split(';')) {
+    const idx = part.indexOf('=');
+    if (idx > 0) out[part.slice(0, idx).trim()] = part.slice(idx + 1).trim();
+  }
+  return out;
+}
+
+function createApp({
+  store,
+  tokens,
+  flowRunner,
+  sessions = new SessionStore(),
+  rateLimitOptions,
+  authRateLimitOptions = { windowMs: 15 * 60 * 1000, max: 20 },
+  allowedHosts,
+  allowSignup = false,
+  requireHttps = true,
+  allowLoopbackHttp = true,
+  trustProxy = false,
+} = {}) {
   const app = express();
   app.disable('x-powered-by');
+  app.set('trust proxy', trustProxy);
+
+  // Tell browsers to only ever use HTTPS once they reached us over HTTPS.
+  app.use((req, res, next) => {
+    if (req.secure) res.set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    next();
+  });
   app.use(express.static(path.join(__dirname, '..', 'public')));
 
   const api = express.Router();
+  // Unauthenticated liveness probe used by the Docker health check.
+  api.get('/health', (req, res) => {
+    res.set('Cache-Control', 'no-store').json({ status: 'ok' });
+  });
   api.use(rateLimit(rateLimitOptions));
   api.use(requestGuard({ allowedHosts }));
+  // Passwords, session cookies and GitHub tokens must never travel unencrypted.
+  // Plain HTTP is only accepted from the local machine (development), unless disabled.
+  api.use((req, res, next) => {
+    const direct = !req.get('X-Forwarded-For') && !req.get('X-Forwarded-Proto') && !req.get('Forwarded');
+    if (!requireHttps || req.secure || (allowLoopbackHttp && direct && isLoopback(req))) {
+      next();
+      return;
+    }
+    res.status(403).json({ error: 'HTTPS is required' });
+  });
   api.use(express.json({ limit: '100kb' }));
   api.use((req, res, next) => {
     res.set('Cache-Control', 'no-store');
@@ -120,8 +172,83 @@ function createApp({ github, store, flowRunner, hasToken = true, rateLimitOption
     }
   };
 
+  // ---- Authentication --------------------------------------------------------
+  const setSessionCookie = (req, res, id, maxAgeMs) => {
+    const attrs = [`${SESSION_COOKIE}=${id}`, 'Path=/', 'HttpOnly', 'SameSite=Strict', `Max-Age=${Math.floor(maxAgeMs / 1000)}`];
+    if (req.secure) attrs.push('Secure');
+    res.append('Set-Cookie', attrs.join('; '));
+  };
+
+  const startSession = (req, res, user) => {
+    setSessionCookie(req, res, sessions.create(user.id), sessions.ttlMs);
+  };
+
+  const currentUser = (req) => {
+    const userId = sessions.get(parseCookies(req.get('Cookie'))[SESSION_COOKIE]);
+    return userId ? store.getUser(userId) : null;
+  };
+
+  const signupOpen = () => store.countUsers() === 0 || allowSignup;
+  const authLimiter = rateLimit(authRateLimitOptions);
+
+  const readCredentials = (body) => {
+    const { username, password } = body || {};
+    if (typeof username !== 'string' || typeof password !== 'string') throw new HttpError(400, 'Username and password are required');
+    return { username: username.trim(), password };
+  };
+
+  api.get('/auth/status', (req, res) => {
+    const user = currentUser(req);
+    res.json({ signupOpen: signupOpen(), user: user ? { username: user.username } : null });
+  });
+
+  api.post('/auth/signup', authLimiter, (req, res) => {
+    if (!signupOpen()) throw new HttpError(403, 'Sign-up is disabled. Ask an administrator to enable ALLOW_SIGNUP.');
+    const { username, password } = readCredentials(req.body);
+    if (!USERNAME_RE.test(username)) throw new HttpError(400, 'Username must be 3-40 characters: letters, digits, ".", "_" or "-"');
+    if (password.length < 10 || password.length > 200) throw new HttpError(400, 'Password must be between 10 and 200 characters');
+    if (store.findUserByName(username)) throw new HttpError(409, 'That username is taken');
+    const user = store.addUser({ username, passwordHash: hashPassword(password) });
+    startSession(req, res, user);
+    res.status(201).json({ username: user.username });
+  });
+
+  api.post('/auth/login', authLimiter, (req, res) => {
+    const { username, password } = readCredentials(req.body);
+    const user = store.findUserByName(username);
+    const ok = verifyPassword(password.slice(0, 200), user && user.passwordHash);
+    if (!user || !ok) throw new HttpError(401, 'Invalid username or password');
+    startSession(req, res, user);
+    res.json({ username: user.username });
+  });
+
+  api.post('/auth/logout', (req, res) => {
+    sessions.destroy(parseCookies(req.get('Cookie'))[SESSION_COOKIE]);
+    setSessionCookie(req, res, '', 0);
+    res.status(204).end();
+  });
+
+  // Everything below requires a signed-in user.
+  api.use((req, res, next) => {
+    const user = currentUser(req);
+    if (!user) {
+      res.status(401).json({ error: 'Sign in required' });
+      return;
+    }
+    req.user = user;
+    // GitHub client authenticated with the signed-in user's own token, built on first use.
+    let client;
+    Object.defineProperty(req, 'github', {
+      get() {
+        if (!client) client = tokens.githubFor(user.id);
+        return client;
+      },
+    });
+    next();
+  });
+
   // Only registered repositories can be accessed through the API so the
-  // server token cannot be used as an open proxy to arbitrary repositories.
+  // app cannot be used as an open proxy to arbitrary repositories.
   const registered = (req, res, next) => {
     const { owner, repo } = req.params;
     assertRepoName(owner, repo);
@@ -131,8 +258,19 @@ function createApp({ github, store, flowRunner, hasToken = true, rateLimitOption
     next();
   };
 
-  api.get('/config', (req, res) => {
-    res.json({ hasToken });
+  // ---- Current user & GitHub token -----------------------------------------
+  api.get('/me', (req, res) => {
+    res.json({ username: req.user.username, githubToken: TokenService.describe(req.user) });
+  });
+
+  api.put('/me/token', wrap(async (req, res) => {
+    const { token } = req.body || {};
+    res.json(await tokens.set(req.user.id, token));
+  }));
+
+  api.delete('/me/token', (req, res) => {
+    tokens.clear(req.user.id);
+    res.status(204).end();
   });
 
   // ---- Repository registration -------------------------------------------
@@ -149,7 +287,7 @@ function createApp({ github, store, flowRunner, hasToken = true, rateLimitOption
       if (repo && repo.endsWith('.git')) repo = repo.slice(0, -4);
     }
     assertRepoName(owner, repo);
-    const info = await github.getRepo(owner, repo);
+    const info = await req.github.getRepo(owner, repo);
     const entry = store.addRepo({
       owner: info.owner.login,
       repo: info.name,
@@ -168,6 +306,7 @@ function createApp({ github, store, flowRunner, hasToken = true, rateLimitOption
   // ---- Dashboard -----------------------------------------------------------
   api.get('/dashboard', wrap(async (req, res) => {
     const repos = store.listRepos();
+    const { github } = req;
     const results = await Promise.all(repos.map(async (r) => {
       try {
         return { ...r, summary: await github.getRepoSummary(r.owner, r.repo), error: null };
@@ -179,13 +318,13 @@ function createApp({ github, store, flowRunner, hasToken = true, rateLimitOption
   }));
 
   api.get('/repos/:owner/:repo/summary', registered, wrap(async (req, res) => {
-    res.json(await github.getRepoSummary(req.repoEntry.owner, req.repoEntry.repo));
+    res.json(await req.github.getRepoSummary(req.repoEntry.owner, req.repoEntry.repo));
   }));
 
   // ---- Pull requests -------------------------------------------------------
   api.get('/repos/:owner/:repo/pulls', registered, wrap(async (req, res) => {
     const state = ['open', 'closed', 'all'].includes(req.query.state) ? req.query.state : 'open';
-    const pulls = await github.listPullRequests(req.repoEntry.owner, req.repoEntry.repo, { state });
+    const pulls = await req.github.listPullRequests(req.repoEntry.owner, req.repoEntry.repo, { state });
     res.json(pulls.map((p) => ({
       number: p.number,
       title: p.title,
@@ -203,7 +342,7 @@ function createApp({ github, store, flowRunner, hasToken = true, rateLimitOption
 
   // ---- Actions -------------------------------------------------------------
   api.get('/repos/:owner/:repo/workflows', registered, wrap(async (req, res) => {
-    const workflows = await github.listWorkflows(req.repoEntry.owner, req.repoEntry.repo);
+    const workflows = await req.github.listWorkflows(req.repoEntry.owner, req.repoEntry.repo);
     res.json(workflows.map((w) => ({
       id: w.id,
       name: w.name,
@@ -229,18 +368,18 @@ function createApp({ github, store, flowRunner, hasToken = true, rateLimitOption
   });
 
   api.get('/repos/:owner/:repo/runs', registered, wrap(async (req, res) => {
-    const runs = await github.listRuns(req.repoEntry.owner, req.repoEntry.repo, { perPage: 30 });
+    const runs = await req.github.listRuns(req.repoEntry.owner, req.repoEntry.repo, { perPage: 30 });
     res.json(runs.map(mapRun));
   }));
 
   api.get('/repos/:owner/:repo/runs/:runId', registered, wrap(async (req, res) => {
     if (!NUMERIC_RE.test(req.params.runId)) throw new HttpError(400, 'Invalid run id');
-    res.json(mapRun(await github.getRun(req.repoEntry.owner, req.repoEntry.repo, req.params.runId)));
+    res.json(mapRun(await req.github.getRun(req.repoEntry.owner, req.repoEntry.repo, req.params.runId)));
   }));
 
   api.get('/repos/:owner/:repo/runs/:runId/jobs', registered, wrap(async (req, res) => {
     if (!NUMERIC_RE.test(req.params.runId)) throw new HttpError(400, 'Invalid run id');
-    const jobs = await github.listJobs(req.repoEntry.owner, req.repoEntry.repo, req.params.runId);
+    const jobs = await req.github.listJobs(req.repoEntry.owner, req.repoEntry.repo, req.params.runId);
     res.json(jobs.map((j) => ({
       id: j.id,
       name: j.name,
@@ -260,7 +399,7 @@ function createApp({ github, store, flowRunner, hasToken = true, rateLimitOption
 
   api.get('/repos/:owner/:repo/jobs/:jobId/logs', registered, wrap(async (req, res) => {
     if (!NUMERIC_RE.test(req.params.jobId)) throw new HttpError(400, 'Invalid job id');
-    const logs = await github.getJobLogs(req.repoEntry.owner, req.repoEntry.repo, req.params.jobId);
+    const logs = await req.github.getJobLogs(req.repoEntry.owner, req.repoEntry.repo, req.params.jobId);
     res.json({ available: logs !== null, logs: logs || '' });
   }));
 
@@ -270,13 +409,13 @@ function createApp({ github, store, flowRunner, hasToken = true, rateLimitOption
     const body = req.body || {};
     const ref = body.ref || req.repoEntry.defaultBranch;
     if (!isValidRefName(ref)) throw new HttpError(400, 'Invalid ref');
-    await github.dispatchWorkflow(req.repoEntry.owner, req.repoEntry.repo, workflowId, ref, parseInputs(body.inputs));
+    await req.github.dispatchWorkflow(req.repoEntry.owner, req.repoEntry.repo, workflowId, ref, parseInputs(body.inputs));
     res.status(202).json({ dispatched: true, ref });
   }));
 
   // ---- Branches ------------------------------------------------------------
   api.get('/repos/:owner/:repo/branches', registered, wrap(async (req, res) => {
-    const branches = await github.listBranches(req.repoEntry.owner, req.repoEntry.repo);
+    const branches = await req.github.listBranches(req.repoEntry.owner, req.repoEntry.repo);
     res.json(branches.map((b) => ({
       name: b.name,
       sha: b.commit && b.commit.sha,
@@ -290,7 +429,7 @@ function createApp({ github, store, flowRunner, hasToken = true, rateLimitOption
     const from = (req.body && req.body.from) || req.repoEntry.defaultBranch;
     if (!isValidRefName(name)) throw new HttpError(400, 'Invalid branch name');
     if (!isValidRefName(from)) throw new HttpError(400, 'Invalid source branch');
-    await github.createBranch(req.repoEntry.owner, req.repoEntry.repo, name, from);
+    await req.github.createBranch(req.repoEntry.owner, req.repoEntry.repo, name, from);
     res.status(201).json({ name, from });
   }));
 
@@ -298,7 +437,7 @@ function createApp({ github, store, flowRunner, hasToken = true, rateLimitOption
     const { name } = req.query;
     if (!isValidRefName(name)) throw new HttpError(400, 'Invalid branch name');
     if (name === req.repoEntry.defaultBranch) throw new HttpError(400, 'The default branch cannot be deleted');
-    await github.deleteBranch(req.repoEntry.owner, req.repoEntry.repo, name);
+    await req.github.deleteBranch(req.repoEntry.owner, req.repoEntry.repo, name);
     res.status(204).end();
   }));
 
@@ -324,30 +463,30 @@ function createApp({ github, store, flowRunner, hasToken = true, rateLimitOption
   };
 
   api.get('/flows', (req, res) => {
-    res.json(store.listFlows());
+    res.json(store.listFlows(req.user.id));
   });
 
   api.post('/flows', (req, res) => {
-    res.status(201).json(store.addFlow(validateFlow(req.body || {})));
+    res.status(201).json(store.addFlow({ ...validateFlow(req.body || {}), ownerId: req.user.id }));
   });
 
   api.delete('/flows/:id', (req, res) => {
-    if (!store.removeFlow(req.params.id)) throw new HttpError(404, 'Flow not found');
+    if (!store.removeFlow(req.params.id, req.user.id)) throw new HttpError(404, 'Flow not found');
     res.status(204).end();
   });
 
   api.post('/flows/:id/run', (req, res) => {
-    const flow = store.getFlow(req.params.id);
+    const flow = store.getFlow(req.params.id, req.user.id);
     if (!flow) throw new HttpError(404, 'Flow not found');
-    res.status(202).json(flowRunner.start(flow));
+    res.status(202).json(flowRunner.start(flow, req.user.id));
   });
 
   api.get('/executions', (req, res) => {
-    res.json(flowRunner.list());
+    res.json(flowRunner.list(req.user.id));
   });
 
   api.get('/executions/:id', (req, res) => {
-    const execution = flowRunner.get(req.params.id);
+    const execution = flowRunner.get(req.params.id, req.user.id);
     if (!execution) throw new HttpError(404, 'Execution not found');
     res.json(execution);
   });
@@ -358,8 +497,11 @@ function createApp({ github, store, flowRunner, hasToken = true, rateLimitOption
 
   // eslint-disable-next-line no-unused-vars
   api.use((err, req, res, next) => {
-    if (err instanceof HttpError) {
+    if (err instanceof HttpError || err instanceof NoTokenError || err instanceof InvalidTokenError) {
       res.status(err.status).json({ error: err.message });
+    } else if (err instanceof GitHubError && err.status === 401) {
+      // The user's own token was rejected; 401 is reserved for "not signed in to this app".
+      res.status(412).json({ error: 'GitHub rejected your token. Update it on the Settings page.' });
     } else if (err instanceof GitHubError) {
       const status = err.status >= 400 && err.status < 500 ? err.status : 502;
       res.status(status).json({ error: `GitHub: ${err.message}` });

@@ -8,39 +8,64 @@ const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * Executes flows: an ordered list of workflow dispatches across repositories.
  * Each step is triggered only after the previous step's run finished with
  * conclusion "success"; otherwise the flow stops and remaining steps are skipped.
+ *
+ * Every execution belongs to the user who started it. The GitHub client for a
+ * step is resolved from that user's (encrypted) token when the step starts, so
+ * the plaintext token is never stored with the execution.
  */
 class FlowRunner {
   constructor({
-    github,
+    githubForUser,
+    store = null,
     pollIntervalMs = 5000,
     discoverTimeoutMs = 2 * 60 * 1000,
     runTimeoutMs = 6 * 60 * 60 * 1000,
-    maxExecutions = 50,
+    maxExecutionsPerUser = 50,
     sleep = defaultSleep,
     now = () => Date.now(),
   }) {
-    this.github = github;
+    this.githubForUser = githubForUser;
+    this.store = store;
     this.pollIntervalMs = pollIntervalMs;
     this.discoverTimeoutMs = discoverTimeoutMs;
     this.runTimeoutMs = runTimeoutMs;
-    this.maxExecutions = maxExecutions;
+    this.maxExecutionsPerUser = maxExecutionsPerUser;
     this.sleep = sleep;
     this.now = now;
-    this.executions = [];
+    this.executions = store ? store.loadExecutions() : [];
+    // Executions that were running when the server stopped cannot be resumed reliably.
+    let changed = false;
+    for (const execution of this.executions) {
+      if (execution.status === 'running') {
+        execution.status = 'interrupted';
+        execution.error = 'The server restarted while this flow was running';
+        execution.finishedAt = execution.finishedAt || new Date(this.now()).toISOString();
+        for (const step of execution.steps) {
+          if (step.status !== 'completed' && step.status !== 'skipped') step.status = 'interrupted';
+        }
+        changed = true;
+      }
+    }
+    if (changed) this.persist();
   }
 
-  list() {
-    return this.executions;
+  persist() {
+    if (this.store) this.store.saveExecutions(this.executions);
   }
 
-  get(id) {
-    return this.executions.find((e) => e.id === id);
+  list(ownerId) {
+    return this.executions.filter((e) => e.ownerId === ownerId);
   }
 
-  /** Starts the flow in the background and returns the execution record. */
-  start(flow) {
+  get(id, ownerId) {
+    return this.executions.find((e) => e.id === id && e.ownerId === ownerId);
+  }
+
+  /** Starts the flow in the background on behalf of `ownerId` and returns the execution record. */
+  start(flow, ownerId) {
     const execution = {
       id: crypto.randomUUID(),
+      ownerId,
       flowId: flow.id,
       flowName: flow.name,
       status: 'running',
@@ -62,9 +87,13 @@ class FlowRunner {
       })),
     };
     this.executions.unshift(execution);
-    if (this.executions.length > this.maxExecutions) this.executions.length = this.maxExecutions;
-    execution.done = this.execute(execution);
-    Object.defineProperty(execution, 'done', { enumerable: false });
+    const mine = this.executions.filter((e) => e.ownerId === ownerId);
+    if (mine.length > this.maxExecutionsPerUser) {
+      const drop = new Set(mine.slice(this.maxExecutionsPerUser));
+      this.executions = this.executions.filter((e) => !drop.has(e));
+    }
+    this.persist();
+    Object.defineProperty(execution, 'done', { value: this.execute(execution), enumerable: false });
     return execution;
   }
 
@@ -72,7 +101,7 @@ class FlowRunner {
     try {
       for (let i = 0; i < execution.steps.length; i += 1) {
         const step = execution.steps[i];
-        await this.executeStep(step);
+        await this.executeStep(step, execution.ownerId);
         if (step.conclusion !== 'success') {
           for (const rest of execution.steps.slice(i + 1)) rest.status = 'skipped';
           execution.status = 'failed';
@@ -87,22 +116,30 @@ class FlowRunner {
       return execution;
     } finally {
       execution.finishedAt = new Date(this.now()).toISOString();
+      this.persist();
     }
   }
 
-  async executeStep(step) {
+  setStatus(step, status) {
+    if (step.status === status) return;
+    step.status = status;
+    this.persist();
+  }
+
+  async executeStep(step, ownerId) {
     const { owner, repo, workflow, ref, inputs } = step;
     try {
-      step.status = 'dispatching';
+      this.setStatus(step, 'dispatching');
+      const github = this.githubForUser(ownerId);
       const listOpts = { workflowId: workflow, event: 'workflow_dispatch', perPage: 20 };
-      const before = await this.github.listRuns(owner, repo, listOpts);
+      const before = await github.listRuns(owner, repo, listOpts);
       const knownIds = new Set(before.map((r) => r.id));
       const dispatchedAt = this.now();
       // GitHub reports head_branch as the short name, e.g. "main" for "refs/heads/main".
       const shortRef = ref ? String(ref).replace(/^refs\/(?:heads|tags)\//, '') : ref;
 
-      await this.github.dispatchWorkflow(owner, repo, workflow, ref, inputs);
-      step.status = 'queued';
+      await github.dispatchWorkflow(owner, repo, workflow, ref, inputs);
+      this.setStatus(step, 'queued');
 
       let run = null;
       while (!run) {
@@ -110,29 +147,29 @@ class FlowRunner {
           throw new Error('Timed out waiting for the dispatched workflow run to appear');
         }
         await this.sleep(this.pollIntervalMs);
-        const runs = await this.github.listRuns(owner, repo, listOpts);
+        const runs = await github.listRuns(owner, repo, listOpts);
         const candidates = runs.filter((r) => !knownIds.has(r.id) && (!shortRef || !r.head_branch || r.head_branch === shortRef));
         // The oldest unseen run is the one created by our dispatch.
         run = candidates.sort((a, b) => new Date(a.created_at) - new Date(b.created_at))[0] || null;
       }
       step.runId = run.id;
       step.runUrl = run.html_url;
-      step.status = run.status;
+      this.setStatus(step, run.status);
 
       while (run.status !== 'completed') {
         if (this.now() - dispatchedAt > this.runTimeoutMs) {
           throw new Error('Timed out waiting for the workflow run to complete');
         }
         await this.sleep(this.pollIntervalMs);
-        run = await this.github.getRun(owner, repo, run.id);
-        step.status = run.status;
+        run = await this.githubForUser(ownerId).getRun(owner, repo, run.id);
+        this.setStatus(step, run.status);
       }
-      step.status = 'completed';
       step.conclusion = run.conclusion;
+      this.setStatus(step, 'completed');
     } catch (err) {
-      step.status = 'completed';
       step.conclusion = 'error';
       step.error = err.message;
+      this.setStatus(step, 'completed');
     }
   }
 }

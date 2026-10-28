@@ -91,6 +91,10 @@ class GitHubClient {
     return Array.isArray(data) ? data.length : 0;
   }
 
+  getAuthenticatedUser() {
+    return this.request('/user');
+  }
+
   getRepo(owner, repo) {
     return this.request(this.repoPath(owner, repo));
   }
