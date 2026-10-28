@@ -313,7 +313,7 @@ test('API requires a session; first user can sign up, later sign-ups are closed'
   const anon = ctx.client();
   assert.equal((await anon('GET', '/repos')).status, 401);
   assert.equal((await anon('GET', '/health')).status, 200);
-  assert.deepEqual((await anon('GET', '/auth/status')).body, { signupOpen: true, user: null });
+  assert.deepEqual((await anon('GET', '/auth/status')).body, { setupRequired: true, signupOpen: true, user: null });
 
   assert.equal((await anon('POST', '/auth/signup', { username: 'x', password: 'correct horse battery' })).status, 400);
   assert.equal((await anon('POST', '/auth/signup', { username: 'alice', password: 'short' })).status, 400);

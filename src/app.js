@@ -199,7 +199,7 @@ function createApp({
 
   api.get('/auth/status', (req, res) => {
     const user = currentUser(req);
-    res.json({ signupOpen: signupOpen(), user: user ? { username: user.username } : null });
+    res.json({ setupRequired: store.countUsers() === 0, signupOpen: signupOpen(), user: user ? { username: user.username } : null });
   });
 
   api.post('/auth/signup', authLimiter, (req, res) => {
