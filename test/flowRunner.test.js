@@ -107,3 +107,14 @@ test('executions are serialisable to JSON', async () => {
   assert.equal(json[0].flowName, 'build then deploy');
   assert.equal(json[0].done, undefined);
 });
+
+test('matches the dispatched run when the step uses a full ref name', async () => {
+  const github = fakeGitHub({});
+  const realDispatch = github.dispatchWorkflow;
+  // GitHub reports head_branch as the short branch name.
+  github.dispatchWorkflow = (owner, repo, workflow, ref, inputs) => realDispatch(owner, repo, workflow, ref.replace('refs/heads/', ''), inputs);
+  const runner = new FlowRunner({ github, sleep: async () => {} });
+  const execution = runner.start({ id: 'f2', name: 'full ref', steps: [{ owner: 'acme', repo: 'api', workflow: 'build.yml', ref: 'refs/heads/main' }] });
+  await execution.done;
+  assert.equal(execution.status, 'success');
+});

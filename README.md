@@ -25,6 +25,7 @@ GITHUB_TOKEN=<your token> npm start
 | `GITHUB_TOKEN` | – | Token used for all GitHub API calls. It stays on the server. Without it only public data can be read. |
 | `PORT` | `3000` | HTTP port. |
 | `HOST` | `127.0.0.1` | Interface to bind to. The app has no authentication, so only expose it on trusted networks. |
+| `ALLOWED_HOSTS` | – | Comma-separated host names the app may be reached by, besides `localhost` and IP addresses (e.g. `gpm.example.com`). This protects against DNS rebinding. |
 | `DATA_FILE` | `./data/db.json` | JSON file where registered repositories and flows are stored. |
 | `GITHUB_API_URL` | `https://api.github.com` | API base URL (e.g. for GitHub Enterprise Server: `https://ghe.example.com/api/v3`). |
 
@@ -41,6 +42,7 @@ Token permissions (fine-grained token) for the repositories you register:
 - GitHub publishes a job's full log once the job finishes. While a job is running, the page updates its step progress live and fetches the log as soon as it's available.
 - Flow executions are kept in memory, so restarting the server clears the execution history. Flow definitions are persisted.
 - Only registered repositories can be accessed through the app's API.
+- State-changing API calls must send `X-Requested-With: XMLHttpRequest`. The bundled frontend does this, and it blocks cross-site request forgery.
 
 ## Development
 

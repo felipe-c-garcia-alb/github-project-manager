@@ -18,7 +18,8 @@ if (!token) {
 const github = new GitHubClient({ token, baseUrl: process.env.GITHUB_API_URL || undefined });
 const store = new Store(dataFile);
 const flowRunner = new FlowRunner({ github });
-const app = createApp({ github, store, flowRunner, hasToken: Boolean(token) });
+const allowedHosts = (process.env.ALLOWED_HOSTS || '').split(',').map((h) => h.trim()).filter(Boolean);
+const app = createApp({ github, store, flowRunner, hasToken: Boolean(token), allowedHosts });
 
 app.listen(port, host, () => {
   console.log(`GitHub Project Manager running at http://${host}:${port}`);

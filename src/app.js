@@ -24,11 +24,10 @@ function isValidRefName(name) {
     !/[\s~^:?*[\\\x00-\x1f\x7f]/.test(name) &&
     !name.includes('..') &&
     !name.includes('@{') &&
-    !name.startsWith('/') &&
-    !name.endsWith('/') &&
     !name.endsWith('.') &&
     !name.endsWith('.lock') &&
-    !name.includes('//')
+    // No empty components (leading/trailing/double slash) and no component starting with "."
+    name.split('/').every((segment) => segment.length > 0 && !segment.startsWith('.'))
   );
 }
 
@@ -48,6 +47,32 @@ function parseInputs(inputs) {
     out[key] = typeof value === 'string' ? value : JSON.stringify(value);
   }
   return out;
+}
+
+function isIpOrLocalhost(hostname) {
+  return hostname === 'localhost' || /^\d{1,3}(\.\d{1,3}){3}$/.test(hostname) || hostname.startsWith('[');
+}
+
+/**
+ * Protects the API against DNS rebinding (unexpected Host header) and
+ * cross-site request forgery (mutating requests must carry a custom header,
+ * which browsers only allow cross-origin after a CORS preflight that this
+ * server never approves).
+ */
+function requestGuard({ allowedHosts = [] } = {}) {
+  const allowed = new Set(allowedHosts.map((h) => h.toLowerCase()));
+  return (req, res, next) => {
+    const hostname = String(req.hostname || '').toLowerCase();
+    if (!isIpOrLocalhost(hostname) && !allowed.has(hostname)) {
+      res.status(403).json({ error: 'Host not allowed. Add it to ALLOWED_HOSTS.' });
+      return;
+    }
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && req.get('X-Requested-With') !== 'XMLHttpRequest') {
+      res.status(403).json({ error: 'Missing X-Requested-With header' });
+      return;
+    }
+    next();
+  };
 }
 
 /** Simple fixed-window, per-client rate limiter for the API. */
@@ -73,13 +98,14 @@ function rateLimit({ windowMs = 60 * 1000, max = 300 } = {}) {
   };
 }
 
-function createApp({ github, store, flowRunner, hasToken = true, rateLimitOptions } = {}) {
+function createApp({ github, store, flowRunner, hasToken = true, rateLimitOptions, allowedHosts } = {}) {
   const app = express();
   app.disable('x-powered-by');
   app.use(express.static(path.join(__dirname, '..', 'public')));
 
   const api = express.Router();
   api.use(rateLimit(rateLimitOptions));
+  api.use(requestGuard({ allowedHosts }));
   api.use(express.json({ limit: '100kb' }));
   api.use((req, res, next) => {
     res.set('Cache-Control', 'no-store');
@@ -118,8 +144,9 @@ function createApp({ github, store, flowRunner, hasToken = true, rateLimitOption
     const body = req.body || {};
     let { owner, repo } = body;
     if (typeof body.fullName === 'string') {
-      const cleaned = body.fullName.trim().replace(/^https?:\/\/github\.com\//i, '').replace(/\.git$/, '').replace(/\/+$/, '');
-      [owner, repo] = cleaned.split('/');
+      const cleaned = body.fullName.trim().slice(0, 300).replace(/^https?:\/\/github\.com\//i, '');
+      [owner, repo] = cleaned.split('/').filter(Boolean);
+      if (repo && repo.endsWith('.git')) repo = repo.slice(0, -4);
     }
     assertRepoName(owner, repo);
     const info = await github.getRepo(owner, repo);

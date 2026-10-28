@@ -3,7 +3,7 @@
 /* Shared helpers for all pages. */
 
 async function api(path, options = {}) {
-  const opts = { ...options, headers: { ...(options.headers || {}) } };
+  const opts = { ...options, headers: { 'X-Requested-With': 'XMLHttpRequest', ...(options.headers || {}) } };
   if (opts.body !== undefined && typeof opts.body !== 'string') {
     opts.body = JSON.stringify(opts.body);
     opts.headers['Content-Type'] = 'application/json';

@@ -64,13 +64,13 @@ async function setup() {
     list: () => started,
     get: (id) => started.find((x) => x.id === id),
   };
-  const app = createApp({ github, store, flowRunner });
+  const app = createApp({ github, store, flowRunner, allowedHosts: ['gpm.internal'] });
   const server = await new Promise((resolve) => { const s = app.listen(0, '127.0.0.1', () => resolve(s)); });
   const baseUrl = `http://127.0.0.1:${server.address().port}/api`;
   const call = async (method, url, body) => {
     const res = await fetch(baseUrl + url, {
       method,
-      headers: body ? { 'Content-Type': 'application/json' } : {},
+      headers: { 'X-Requested-With': 'XMLHttpRequest', ...(body ? { 'Content-Type': 'application/json' } : {}) },
       body: body ? JSON.stringify(body) : undefined,
     });
     const text = await res.text();
@@ -81,14 +81,16 @@ async function setup() {
 
 test('isValidRefName accepts typical names and rejects unsafe ones', () => {
   for (const ok of ['main', 'feature/x', 'release-1.0', 'v1.2.3']) assert.ok(isValidRefName(ok), ok);
-  for (const bad of ['', '../etc', 'a b', 'a..b', '/x', 'x/', 'x.lock', 'a~1', undefined, 5]) assert.ok(!isValidRefName(bad), String(bad));
+  for (const bad of ['', '../etc', 'a b', 'a..b', '/x', 'x/', 'a//b', 'x.lock', 'a~1', './main', 'a/./b', '.hidden', undefined, 5]) {
+    assert.ok(!isValidRefName(bad), String(bad));
+  }
 });
 
 test('repository registration, dashboard and removal', async (t) => {
   const ctx = await setup();
   t.after(ctx.close);
 
-  let res = await ctx.call('POST', '/repos', { fullName: 'https://github.com/octo/hello.git' });
+  let res = await ctx.call('POST', '/repos', { fullName: 'https://github.com/octo/hello.git/' });
   assert.equal(res.status, 201);
   assert.equal(res.body.fullName, 'octo/hello');
   assert.equal(res.body.defaultBranch, 'main');
@@ -219,9 +221,47 @@ test('invalid JSON bodies are rejected with 400', async (t) => {
   t.after(ctx.close);
   const res = await fetch(`${ctx.baseUrl}/flows`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
     body: '{not json',
   });
   assert.equal(res.status, 400);
   assert.deepEqual(await res.json(), { error: 'Invalid JSON body' });
+});
+
+test('mutating requests without X-Requested-With are rejected (CSRF)', async (t) => {
+  const ctx = await setup();
+  t.after(ctx.close);
+  await ctx.call('POST', '/repos', { fullName: 'octo/hello' });
+  const res = await fetch(`${ctx.baseUrl}/repos/octo/hello/workflows/deploy.yml/dispatches`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: 'x=1',
+  });
+  assert.equal(res.status, 403);
+  assert.ok(!ctx.github.calls.some((c) => c[0] === 'dispatchWorkflow'));
+});
+
+test('requests with an unexpected Host header are rejected (DNS rebinding)', async (t) => {
+  const ctx = await setup();
+  t.after(ctx.close);
+  const http = require('node:http');
+  const { port } = new URL(ctx.baseUrl);
+  const status = (host) => new Promise((resolve, reject) => {
+    http.get({ host: '127.0.0.1', port, path: '/api/repos', headers: { Host: host } }, (res) => {
+      res.resume();
+      resolve(res.statusCode);
+    }).on('error', reject);
+  });
+  assert.equal(await status('evil.example.com'), 403);
+  assert.equal(await status('gpm.internal:8080'), 200);
+  assert.equal(await status(`localhost:${port}`), 200);
+});
+
+test('a dot-segment branch name cannot be used to delete the default branch', async (t) => {
+  const ctx = await setup();
+  t.after(ctx.close);
+  await ctx.call('POST', '/repos', { fullName: 'octo/hello' });
+  const res = await ctx.call('DELETE', `/repos/octo/hello/branches?name=${encodeURIComponent('./main')}`);
+  assert.equal(res.status, 400);
+  assert.ok(!ctx.github.calls.some((c) => c[0] === 'deleteBranch'));
 });

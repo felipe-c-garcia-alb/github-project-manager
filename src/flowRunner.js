@@ -98,6 +98,8 @@ class FlowRunner {
       const before = await this.github.listRuns(owner, repo, listOpts);
       const knownIds = new Set(before.map((r) => r.id));
       const dispatchedAt = this.now();
+      // GitHub reports head_branch as the short name, e.g. "main" for "refs/heads/main".
+      const shortRef = ref ? String(ref).replace(/^refs\/(?:heads|tags)\//, '') : ref;
 
       await this.github.dispatchWorkflow(owner, repo, workflow, ref, inputs);
       step.status = 'queued';
@@ -109,7 +111,7 @@ class FlowRunner {
         }
         await this.sleep(this.pollIntervalMs);
         const runs = await this.github.listRuns(owner, repo, listOpts);
-        const candidates = runs.filter((r) => !knownIds.has(r.id) && (!ref || !r.head_branch || r.head_branch === ref));
+        const candidates = runs.filter((r) => !knownIds.has(r.id) && (!shortRef || !r.head_branch || r.head_branch === shortRef));
         // The oldest unseen run is the one created by our dispatch.
         run = candidates.sort((a, b) => new Date(a.created_at) - new Date(b.created_at))[0] || null;
       }
