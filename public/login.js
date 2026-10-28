@@ -8,8 +8,14 @@
   let mode = 'login';
 
   // Only redirect to pages of this app (prevents open redirects through ?next=).
-  const next = new URLSearchParams(location.search).get('next') || '';
-  const target = /^[a-z]+\.html(\?[^#]*)?$/.test(next) ? next : 'index.html';
+  const PAGES = ['index.html', 'repo.html', 'actions.html', 'settings.html'];
+  const target = (() => {
+    const next = new URLSearchParams(location.search).get('next') || '';
+    const [page, query] = next.split('?', 2);
+    const index = PAGES.indexOf(page);
+    if (index === -1) return 'index.html';
+    return query ? `${PAGES[index]}?${new URLSearchParams(query).toString()}` : PAGES[index];
+  })();
 
   function setMode(newMode) {
     mode = newMode;
