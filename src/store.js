@@ -85,6 +85,10 @@ class Store {
 
   addUser({ username, passwordHash }) {
     const user = { id: crypto.randomUUID(), username, passwordHash, githubToken: null, createdAt: new Date().toISOString() };
+    if (this.data.users.length === 0) {
+      // Flows created before accounts existed belong to the first account.
+      for (const flow of this.data.flows) if (!flow.ownerId) flow.ownerId = user.id;
+    }
     this.data.users.push(user);
     this.save();
     return user;

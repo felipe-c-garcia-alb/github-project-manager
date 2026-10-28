@@ -139,25 +139,31 @@ function createApp({
     if (req.secure) res.set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
     next();
   });
-  app.use(express.static(path.join(__dirname, '..', 'public')));
-
-  const api = express.Router();
   // Unauthenticated liveness probe used by the Docker health check.
-  api.get('/health', (req, res) => {
+  app.get('/api/health', (req, res) => {
     res.set('Cache-Control', 'no-store').json({ status: 'ok' });
   });
-  api.use(rateLimit(rateLimitOptions));
-  api.use(requestGuard({ allowedHosts }));
-  // Passwords, session cookies and GitHub tokens must never travel unencrypted.
+
+  // Passwords, session cookies and GitHub tokens must never travel unencrypted, so
+  // neither the pages (with their login/token forms) nor the API are served over plain HTTP.
   // Plain HTTP is only accepted from the local machine (development), unless disabled.
-  api.use((req, res, next) => {
+  app.use((req, res, next) => {
     const direct = !req.get('X-Forwarded-For') && !req.get('X-Forwarded-Proto') && !req.get('Forwarded');
     if (!requireHttps || req.secure || (allowLoopbackHttp && direct && isLoopback(req))) {
       next();
       return;
     }
-    res.status(403).json({ error: 'HTTPS is required' });
+    if (req.path.startsWith('/api/')) {
+      res.status(403).json({ error: 'HTTPS is required' });
+    } else {
+      res.status(403).type('text/plain').send('HTTPS is required. Open this app with an https:// URL.');
+    }
   });
+  app.use(express.static(path.join(__dirname, '..', 'public')));
+
+  const api = express.Router();
+  api.use(rateLimit(rateLimitOptions));
+  api.use(requestGuard({ allowedHosts }));
   api.use(express.json({ limit: '100kb' }));
   api.use((req, res, next) => {
     res.set('Cache-Control', 'no-store');

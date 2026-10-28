@@ -413,6 +413,11 @@ test('REQUIRE_HTTPS rejects plain HTTP and sends HSTS over HTTPS', async (t) => 
   assert.match(res.body.error, /HTTPS/);
   assert.equal((await call('GET', '/health')).status, 200);
 
+  // The pages carrying the login and token forms are not served over plain HTTP either.
+  const page = await fetch(ctx.baseUrl.replace('/api', '/login.html'));
+  assert.equal(page.status, 403);
+  assert.equal((await fetch(ctx.baseUrl.replace('/api', '/login.html'), { headers: { 'X-Forwarded-Proto': 'https' } })).status, 200);
+
   res = await call('POST', '/auth/signup', { username: 'alice', password: 'correct horse battery' }, { 'X-Forwarded-Proto': 'https' });
   assert.equal(res.status, 201);
   assert.match(res.headers.get('strict-transport-security'), /max-age=/);
@@ -439,4 +444,15 @@ test('login attempts are rate limited', async (t) => {
     statuses.push((await call('POST', '/auth/login', { username: 'alice', password: 'wrong password!' })).status);
   }
   assert.deepEqual(statuses, [401, 401, 401, 429]);
+});
+
+test('flows created before accounts existed are given to the first account', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gpm-'));
+  const file = path.join(dir, 'db.json');
+  fs.writeFileSync(file, JSON.stringify({ repos: [], flows: [{ id: 'old', name: 'legacy', steps: [] }] }));
+  const store = new Store(file);
+  const first = store.addUser({ username: 'alice', passwordHash: 'x' });
+  const second = store.addUser({ username: 'bob', passwordHash: 'x' });
+  assert.equal(store.listFlows(first.id).length, 1);
+  assert.equal(store.listFlows(second.id).length, 0);
 });
